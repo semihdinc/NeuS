@@ -16,6 +16,9 @@ from models.dataset import Dataset
 from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF
 from models.renderer import NeuSRenderer
 
+from models.evdataloader import DataLoader
+
+logging.getLogger('PIL').setLevel(logging.WARNING)
 
 class Runner:
     def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False):
@@ -34,6 +37,19 @@ class Runner:
         os.makedirs(self.base_exp_dir, exist_ok=True)
         self.dataset = Dataset(self.conf['dataset'])
         self.iter_step = 0
+
+        inp_args = {
+            'scene': self.conf['ev_scene'],
+            "data_root_fp": "/home/ubuntu/src/data/",
+            "device": "cuda",
+            "target_sample_batch_size": 1<<19,
+            "render_n_samples": 1024,
+            "depth_fraction": 0.0,
+            "patch_padding": False,
+        }
+
+        #Ev dataloader
+        self.ev_dataset = DataLoader(args=inp_args, color_bkgd_aug='random', isTest=False)
 
         # Training parameters
         self.end_iter = self.conf.get_int('train.end_iter')
@@ -86,6 +102,7 @@ class Runner:
                     model_list.append(model_name)
             model_list.sort()
             latest_model_name = model_list[-1]
+            # latest_model_name = 'ckpt_180000.pth'
 
         if latest_model_name is not None:
             logging.info('Find checkpoint: {}'.format(latest_model_name))
@@ -102,9 +119,15 @@ class Runner:
         image_perm = self.get_image_perm()
 
         for iter_i in tqdm(range(res_step)):
-            data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            
+            ev_data = self.ev_dataset[iter_i]
+            rays, true_rgb, mask = ev_data["rays"], ev_data["pixels"], ev_data["mask"]
+            rays_o = rays.origins
+            rays_d = rays.viewdirs
+            
+            # data = self.dataset.gen_random_rays_at(image_perm[self.iter_step % len(image_perm)], self.batch_size)
+            # rays_o, rays_d, true_rgb, mask = data[:, :3], data[:, 3: 6], data[:, 6: 9], data[:, 9: 10]
 
-            rays_o, rays_d, true_rgb, mask = data[:, :3], data[:, 3: 6], data[:, 6: 9], data[:, 9: 10]
             near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
 
             background_rgb = None
@@ -159,13 +182,13 @@ class Runner:
                 print(self.base_exp_dir)
                 print('iter:{:8>d} loss = {} lr={}'.format(self.iter_step, loss, self.optimizer.param_groups[0]['lr']))
 
-            if self.iter_step % self.save_freq == 0:
+            if self.iter_step % self.save_freq == 0: #10000
                 self.save_checkpoint()
 
-            if self.iter_step % self.val_freq == 0:
-                self.validate_image()
+            # if self.iter_step % self.val_freq == 0: #2500
+            #     self.validate_image()
 
-            if self.iter_step % self.val_mesh_freq == 0:
+            if self.iter_step % self.val_mesh_freq == 0: #5000
                 self.validate_mesh()
 
             self.update_learning_rate()
@@ -174,7 +197,8 @@ class Runner:
                 image_perm = self.get_image_perm()
 
     def get_image_perm(self):
-        return torch.randperm(self.dataset.n_images)
+        return torch.randperm(self.ev_dataset.num_train_img)
+        # return torch.randperm(self.dataset.n_images)
 
     def get_cos_anneal_ratio(self):
         if self.anneal_end == 0.0:
@@ -232,13 +256,21 @@ class Runner:
 
     def validate_image(self, idx=-1, resolution_level=-1):
         if idx < 0:
-            idx = np.random.randint(self.dataset.n_images)
+            # idx = np.random.randint(self.dataset.n_images)
+            idx = np.random.randint(self.ev_dataset.num_train_img)
 
         print('Validate: iter: {}, camera: {}'.format(self.iter_step, idx))
 
         if resolution_level < 0:
             resolution_level = self.validate_resolution_level
-        rays_o, rays_d = self.dataset.gen_rays_at(idx, resolution_level=resolution_level)
+        
+        # rays_o, rays_d = self.dataset.gen_rays_at(idx, resolution_level=resolution_level)
+        # ev_data = self.ev_dataset.createNadirRays()
+        
+        ev_data = self.ev_dataset.fetch_test_data(idx,resolution_level)
+        rays_o = ev_data["rays"].origins
+        rays_d = ev_data["rays"].viewdirs    
+
         H, W, _ = rays_o.shape
         rays_o = rays_o.reshape(-1, 3).split(self.batch_size)
         rays_d = rays_d.reshape(-1, 3).split(self.batch_size)
@@ -277,7 +309,8 @@ class Runner:
         normal_img = None
         if len(out_normal_fine) > 0:
             normal_img = np.concatenate(out_normal_fine, axis=0)
-            rot = np.linalg.inv(self.dataset.pose_all[idx, :3, :3].detach().cpu().numpy())
+            # rot = np.linalg.inv(self.dataset.pose_all[idx, :3, :3].detach().cpu().numpy())
+            rot = np.linalg.inv(self.ev_dataset.c2w[idx,:3,:3].detach().cpu().numpy())
             normal_img = (np.matmul(rot[None, :, :], normal_img[:, :, None])
                           .reshape([H, W, 3, -1]) * 128 + 128).clip(0, 255)
 
@@ -285,17 +318,12 @@ class Runner:
         os.makedirs(os.path.join(self.base_exp_dir, 'normals'), exist_ok=True)
 
         for i in range(img_fine.shape[-1]):
+            
             if len(out_rgb_fine) > 0:
-                cv.imwrite(os.path.join(self.base_exp_dir,
-                                        'validations_fine',
-                                        '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
-                           np.concatenate([img_fine[..., i],
-                                           self.dataset.image_at(idx, resolution_level=resolution_level)]))
+                cv.imwrite(os.path.join(self.base_exp_dir,'validations_fine','{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)), img_fine[..., i])
+            
             if len(out_normal_fine) > 0:
-                cv.imwrite(os.path.join(self.base_exp_dir,
-                                        'normals',
-                                        '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
-                           normal_img[..., i])
+                cv.imwrite(os.path.join(self.base_exp_dir,'normals','{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)), normal_img[..., i])
 
     def render_novel_image(self, idx_0, idx_1, ratio, resolution_level):
         """
@@ -325,7 +353,7 @@ class Runner:
         img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3]) * 256).clip(0, 255).astype(np.uint8)
         return img_fine
 
-    def validate_mesh(self, world_space=False, resolution=64, threshold=0.0):
+    def validate_mesh(self, world_space=True, resolution=64, threshold=0.0):
         bound_min = torch.tensor(self.dataset.object_bbox_min, dtype=torch.float32)
         bound_max = torch.tensor(self.dataset.object_bbox_max, dtype=torch.float32)
 
@@ -334,7 +362,8 @@ class Runner:
         os.makedirs(os.path.join(self.base_exp_dir, 'meshes'), exist_ok=True)
 
         if world_space:
-            vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
+            vertices = vertices * np.array(self.ev_dataset.aabb[3].cpu())
+            # vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
 
         mesh = trimesh.Trimesh(vertices, triangles)
         mesh.export(os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.ply'.format(self.iter_step)))
@@ -391,7 +420,9 @@ if __name__ == '__main__':
     if args.mode == 'train':
         runner.train()
     elif args.mode == 'validate_mesh':
-        runner.validate_mesh(world_space=True, resolution=512, threshold=args.mcube_threshold)
+        runner.validate_mesh(world_space=True, resolution=256, threshold=args.mcube_threshold)
+    elif args.mode == 'validate_image':
+        runner.validate_image(idx=23)
     elif args.mode.startswith('interpolate'):  # Interpolate views given two image indices
         _, img_idx_0, img_idx_1 = args.mode.split('_')
         img_idx_0 = int(img_idx_0)
