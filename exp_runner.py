@@ -420,7 +420,7 @@ if __name__ == '__main__':
     if args.mode == 'train':
         runner.train()
     elif args.mode == 'validate_mesh':
-        runner.validate_mesh(world_space=True, resolution=64, threshold=args.mcube_threshold)
+        runner.validate_mesh(world_space=True, resolution=256, threshold=args.mcube_threshold)
     elif args.mode == 'validate_image':
         runner.validate_image(idx=23)
     elif args.mode.startswith('interpolate'):  # Interpolate views given two image indices
