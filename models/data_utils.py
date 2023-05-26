@@ -207,7 +207,7 @@ def read_reproj_jsons(transforms_path: str, reproj_path: str, downscale_factor: 
 def load_renderings(root_fp: str, subject_id: str):
     data_dir = os.path.join(root_fp, subject_id)
     
-    with open(os.path.join(data_dir, 'transforms.json'), 'r') as fp:
+    with open(os.path.join(data_dir, 'transforms_train.json'), 'r') as fp:
         meta = json.load(fp)
 
     images = []
@@ -217,8 +217,8 @@ def load_renderings(root_fp: str, subject_id: str):
     
     scene_scale_factor = meta["aabb"][1][0] #we use xmax in aabb to downscale scene to unit cube [-1,1] 
 
-    aabb = meta['aabb']
-    Pw = np.array([[aabb[0][0],aabb[1][0],aabb[0][0],aabb[1][0]],[aabb[1][1],aabb[1][1],aabb[0][1],aabb[0][1]],[0,0,0,0],[1,1,1,1]])
+    # aabb = meta['aabb']
+    # Pw = np.array([[aabb[0][0],aabb[1][0],aabb[0][0],aabb[1][0]],[aabb[1][1],aabb[1][1],aabb[0][1],aabb[0][1]],[0,0,0,0],[1,1,1,1]])
 
     for i in range(len(meta["frames"])):
         frame = meta["frames"][i]
@@ -230,9 +230,9 @@ def load_renderings(root_fp: str, subject_id: str):
         
         
         #mask the image
-        c2w = np.array(frame["transform_matrix"])
-        pts = getROICornerPixels(c2w,frame['fl_x'],frame['cx'],frame['cy'],frame['w'],Pw)
-        rgba, _ = maskImage(rgba, pts)
+        # c2w = np.array(frame["transform_matrix"])
+        # pts = getROICornerPixels(c2w,frame['fl_x'],frame['cx'],frame['cy'],frame['w'],Pw)
+        # rgba, _ = maskImage(rgba, pts)
 
         images.append(rgba)
         #per image intrinsics

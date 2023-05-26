@@ -179,7 +179,6 @@ class Runner:
             self.writer.add_scalar('Statistics/psnr', psnr, self.iter_step)
 
             if self.iter_step % self.report_freq == 0:
-                print(self.base_exp_dir)
                 print('iter:{:8>d} loss = {} lr={}'.format(self.iter_step, loss, self.optimizer.param_groups[0]['lr']))
 
             if self.iter_step % self.save_freq == 0: #10000
